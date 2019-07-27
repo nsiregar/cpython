@@ -292,49 +292,28 @@ class AutoCompleteWindow:
     def keypress_event(self, event):
         if not self.is_active():
             return None
-        keysym = event.keysym
-        if hasattr(event, "mc_state"):
-            state = event.mc_state
-        else:
-            state = 0
-        if keysym != "Tab":
-            self.lastkey_was_tab = False
-        if (len(keysym) == 1 or keysym in ("underscore", "BackSpace")
-            or (self.mode == COMPLETE_FILES and keysym in
-                ("period", "minus"))) \
-           and not (state & ~MC_SHIFT):
+        key = KeySym(event)
+        self.lastkey_was_tab = key.is_tab()
+
+        if (len(key.sym) == 1 or key.is_backunder()
+            or (self.mode == COMPLETE_FILES and key.is_periodmin())) \
+           and not (key.state & ~MC_SHIFT):
             # Normal editing of text
-            if len(keysym) == 1:
-                self._change_start(self.start + keysym)
-            elif keysym == "underscore":
-                self._change_start(self.start + '_')
-            elif keysym == "period":
-                self._change_start(self.start + '.')
-            elif keysym == "minus":
-                self._change_start(self.start + '-')
-            else:
-                # keysym == "BackSpace"
-                if len(self.start) == 0:
-                    self.hide_window()
-                    return None
-                self._change_start(self.start[:-1])
+            self.update_start_pos(key)
             self.lasttypedstart = self.start
             self.listbox.select_clear(0, int(self.listbox.curselection()[0]))
             self.listbox.select_set(self._binary_search(self.start))
             self._selection_changed()
             return "break"
 
-        elif keysym == "Return":
+        elif key.is_return():
             self.complete()
             self.hide_window()
             return 'break'
 
-        elif (self.mode == COMPLETE_ATTRIBUTES and keysym in
-              ("period", "space", "parenleft", "parenright", "bracketleft",
-               "bracketright")) or \
-             (self.mode == COMPLETE_FILES and keysym in
-              ("slash", "backslash", "quotedbl", "apostrophe")) \
-             and not (state & ~MC_SHIFT):
+        elif (self.mode == COMPLETE_ATTRIBUTES and key.is_bracketsym()) or \
+                (self.mode == COMPLETE_FILES and key.is_quotesym()) \
+                and not (key.state & ~MC_SHIFT):
             # If start is a prefix of the selection, but is not '' when
             # completing file names, put the whole
             # selected completion. Anyway, close the list.
@@ -345,35 +324,17 @@ class AutoCompleteWindow:
             self.hide_window()
             return None
 
-        elif keysym in ("Home", "End", "Prior", "Next", "Up", "Down") and \
-             not state:
+        elif key.is_possym() and not key.state:
             # Move the selection in the listbox
             self.userwantswindow = True
-            cursel = int(self.listbox.curselection()[0])
-            if keysym == "Home":
-                newsel = 0
-            elif keysym == "End":
-                newsel = len(self.completions)-1
-            elif keysym in ("Prior", "Next"):
-                jump = self.listbox.nearest(self.listbox.winfo_height()) - \
-                       self.listbox.nearest(0)
-                if keysym == "Prior":
-                    newsel = max(0, cursel-jump)
-                else:
-                    assert keysym == "Next"
-                    newsel = min(len(self.completions)-1, cursel+jump)
-            elif keysym == "Up":
-                newsel = max(0, cursel-1)
-            else:
-                assert keysym == "Down"
-                newsel = min(len(self.completions)-1, cursel+1)
+            cursel, newsel = self.get_sel_pos(key, self.listbox)
             self.listbox.select_clear(cursel)
             self.listbox.select_set(newsel)
             self._selection_changed()
             self._change_start(self.completions[newsel])
             return "break"
 
-        elif (keysym == "Tab" and not state):
+        elif (key.is_tab() and not key.state):
             if self.lastkey_was_tab:
                 # two tabs in a row; insert current selection and close acw
                 cursel = int(self.listbox.curselection()[0])
@@ -386,12 +347,11 @@ class AutoCompleteWindow:
                 self.lastkey_was_tab = True
                 return None
 
-        elif any(s in keysym for s in ("Shift", "Control", "Alt",
-                                       "Meta", "Command", "Option")):
+        elif key.is_modifier():
             # A modifier key, so ignore
             return None
 
-        elif event.char and event.char >= ' ':
+        elif event.char and event.char >= SYMBOL.SPACE:
             # Regular character with a non-length-1 keycode
             self._change_start(self.start + event.char)
             self.lasttypedstart = self.start
@@ -458,6 +418,192 @@ class AutoCompleteWindow:
         self.listbox = None
         self.autocompletewindow.destroy()
         self.autocompletewindow = None
+
+    def update_start_pos(self, key):
+        def default():
+            return self.start + key.sym
+
+        def underscore():
+            return self.start + SYMBOL.UNDERSCORE
+
+        def period():
+            return self.start + SYMBOL.PERIOD
+
+        def minus():
+            return self.start + SYMBOL.MINUS
+
+        def backspace():
+            if len(self.start) == 0:
+                self.hide_window()
+                return None
+            return self.start[:-1]
+
+        pos = {
+                KEY.UNDERSCORE: underscore,
+                KEY.PERIOD: period,
+                KEY.MINUS: minus,
+                KEY.BACKSPACE: backspace
+                }
+
+        start_pos = pos.get(key.sym, default)()
+        if start_pos:
+            self._change_start(start_pos)
+
+    def get_sel_pos(self, key, listbox):
+        cursel = int(listbox.curselection()[0])
+
+        def jump_pos():
+            jump = listbox.nearest(listbox.winfo_height()) - \
+                   listbox.nearest(0)
+            return jump
+
+        def home_pos():
+            return 0
+
+        def end_pos():
+            return len(self.completions) - 1
+
+        def prev_pos():
+            return max(0, cursel - jump_pos())
+
+        def next_pos():
+            assert key.is_next()
+            return min(end_pos(), cursel + jump_pos())
+
+        def up_pos():
+            return max(0, cursel - 1)
+
+        def down_pos():
+            assert key.is_down()
+            return min(end_pos(), cursel + 1)
+
+        def default():
+            return None
+
+        keysel = {
+                KEY.HOME: home_pos,
+                KEY.END: end_pos,
+                KEY.PREVIOUS: prev_pos,
+                KEY.NEXT: next_pos,
+                KEY.UP: up_pos,
+                KEY.DOWN: down_pos
+                }
+        newsel = keysel.get(key.sym, default)()
+        return (cursel, newsel)
+
+
+class KeySym(object):
+    state = 0
+
+    def __init__(self, event):
+        self.sym = event.keysym
+        if hasattr(event, "mc_state"):
+            self.state = event.mc_state
+
+    def is_tab(self):
+        return self.sym == KEY.TAB
+
+    def is_periodmin(self):
+        return self.sym in KEY.PERIODMIN_SYM
+
+    def is_backunder(self):
+        return self.sym in KEY.BACKUNDER_SYM
+
+    def is_underscore(self):
+        return self.sym == KEY.UNDERSCORE
+
+    def is_period(self):
+        return self.sym == KEY.PERIOD
+
+    def is_minus(self):
+        return self.sym == KEY.MINUS
+
+    def is_backspace(self):
+        return self.sym == KEY.BACKSPACE
+
+    def is_return(self):
+        return self.sym == KEY.RETURN
+
+    def is_bracketsym(self):
+        return self.sym in KEY.BRACKET_SYM
+
+    def is_quotesym(self):
+        return self.sym in KEY.QUOTE_SYM
+
+    def is_possym(self):
+        return self.sym in KEY.POSITION
+
+    def is_home(self):
+        return self.sym == KEY.HOME
+
+    def is_end(self):
+        return self.sym == KEY.END
+
+    def is_histsym(self):
+        return self.sym in KEY.HISTORY
+
+    def is_previous(self):
+        return self.sym == KEY.PREVIOUS
+
+    def is_next(self):
+        return self.sym == KEY.NEXT
+
+    def is_up(self):
+        return self.sym == KEY.UP
+
+    def is_down(self):
+        return self.sym == KEY.DOWN
+
+    def is_modifier(self):
+        return any(sym in self.sym for sym in KEY.MODIFIER)
+
+
+class SYMBOL(object):
+    UNDERSCORE = "_"
+    PERIOD = "."
+    MINUS = "-"
+    SPACE = " "
+
+
+class KEY(object):
+    SHIFT = "Shift"
+    CTRL = "Control"
+    ALT = "Alt"
+    META = "Meta"
+    COMMAND = "Command"
+    OPTION = "Option"
+    MODIFIER = (SHIFT, CTRL, ALT, META, COMMAND, OPTION)
+    UP = "Up"
+    DOWN = "Down"
+    LEFT = "Left"
+    RIGHT = "Right"
+    ARROW = (UP, DOWN, LEFT, RIGHT)
+    HOME = "Home"
+    END = "End"
+    PREVIOUS = "Prior"
+    NEXT = "Next"
+    POSITION = (HOME, END, PREVIOUS, NEXT, UP, DOWN)
+    HISTORY = (PREVIOUS, NEXT)
+    PERIOD = "period"
+    SPACE = "space"
+    PARENTHESIS_LEFT = "parentleft"
+    PARENTHESIS_RIGHT = "parenright"
+    BRACKET_LEFT = "bracketleft"
+    BRACKET_RIGHT = "bracketright"
+    BRACKET_SYM = (PERIOD, SPACE, PARENTHESIS_LEFT, PARENTHESIS_RIGHT,
+                   BRACKET_LEFT, BRACKET_RIGHT)
+    SLASH = "slash"
+    BACKSLASH = "backslash"
+    DOUBLE_QUOTE = "quotedbl"
+    APOSTROPHE = "apostrophe"
+    QUOTE_SYM = (SLASH, BACKSLASH, DOUBLE_QUOTE, APOSTROPHE)
+    MINUS = "minus"
+    UNDERSCORE = "underscore"
+    BACKSPACE = "BackSpace"
+    TAB = "Tab"
+    RETURN = "Return"
+    PERIODMIN_SYM = (PERIOD, MINUS)
+    BACKUNDER_SYM = (UNDERSCORE, BACKSPACE)
 
 
 if __name__ == '__main__':

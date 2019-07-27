@@ -10,9 +10,11 @@ import sys
 
 # These constants represent the two different types of completions.
 # They must be defined here so autocomple_w can import them.
-COMPLETE_ATTRIBUTES, COMPLETE_FILES = range(1, 2+1)
+COMPLETE_ATTRIBUTES = 1
+COMPLETE_FILES = 2
 
 from idlelib import autocomplete_w
+from idlelib.autocomplete_w import SYMBOL
 from idlelib.config import idleConf
 from idlelib.hyperparser import HyperParser
 
@@ -113,6 +115,19 @@ class AutoComplete:
         . or /  try_open_completions    False, False,   False   yes
         tab     autocomplete            False, True,    True    no
         """
+        def set_mode(mode):
+            self._remove_autocomplete_window()
+            return mode
+
+        def find_char(curline, condition, index, stop):
+            idx = reduce_idx(index, condition)
+            return curline[idx:stop]
+
+        def reduce_idx(idx, condition):
+            while idx and condition:
+                idx -= 1
+            return idx
+
         # Cancel another delayed call, if it exists.
         if self._delayed_completion_id is not None:
             self.text.after_cancel(self._delayed_completion_id)
@@ -120,46 +135,47 @@ class AutoComplete:
 
         hp = HyperParser(self.editwin, "insert")
         curline = self.text.get("insert linestart", "insert")
-        i = j = len(curline)
-        if hp.is_in_string() and (not mode or mode==COMPLETE_FILES):
+        index = stop = len(curline)
+        last_char = curline[index - 1] if index > 0 else SYMBOL.EMPTY_CHAR
+        if mode:
+            return None
+
+        if hp.is_in_string():
             # Find the beginning of the string.
             # fetch_completions will look at the file system to determine
             # whether the string value constitutes an actual file name
             # XXX could consider raw strings here and unescape the string
             # value if it's not raw.
-            self._remove_autocomplete_window()
-            mode = COMPLETE_FILES
+            mode = set_mode(COMPLETE_FILES)
+
             # Find last separator or string start
-            while i and curline[i-1] not in "'\"" + SEPS:
-                i -= 1
-            comp_start = curline[i:j]
-            j = i
+            condition = last_char not in "'\"" + SEPS
+            comp_start = find_char(curline, condition, index, stop)
+            stop = reduce_idx(index, condition)
             # Find string start
-            while i and curline[i-1] not in "'\"":
-                i -= 1
-            comp_what = curline[i:j]
-        elif hp.is_in_code() and (not mode or mode==COMPLETE_ATTRIBUTES):
-            self._remove_autocomplete_window()
-            mode = COMPLETE_ATTRIBUTES
-            while i and (curline[i-1] in ID_CHARS or ord(curline[i-1]) > 127):
-                i -= 1
-            comp_start = curline[i:j]
-            if i and curline[i-1] == '.':
-                hp.set_index("insert-%dc" % (len(curline)-(i-1)))
+            condition = last_char not in "'\""
+            comp_what = find_char(curline, condition, index, stop)
+
+        if hp.is_in_code():
+            mode = set_mode(COMPLETE_ATTRIBUTES)
+
+            condition = last_char in ID_CHARS or ord(last_char) > 127
+            comp_start = find_char(curline, condition, index, stop)
+            comp_what = SYMBOL.EMPTY_CHAR
+            if index and last_char == '.':
+                hp.set_index("insert-%dc" % (len(curline)-(index-1)))
                 comp_what = hp.get_expression()
                 if not comp_what or \
                    (not evalfuncs and comp_what.find('(') != -1):
                     return None
-            else:
-                comp_what = ""
-        else:
-            return None
 
         if complete and not comp_what and not comp_start:
             return None
+
         comp_lists = self.fetch_completions(comp_what, mode)
         if not comp_lists[0]:
             return None
+
         self.autocompletewindow = self._make_autocomplete_window()
         return not self.autocompletewindow.show_window(
                 comp_lists, "insert-%dc" % len(comp_start),
